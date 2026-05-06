@@ -3,6 +3,8 @@ from enum import Enum
 from pathlib import Path
 import sys
 import __main__
+import logging
+import time
 
 import cloudpickle
 import joblib
@@ -14,16 +16,14 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, constr
-import time
 
 from custom_models import IsoForestClassifier
-import logging
+
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(levelname)s - %(message)s",
 )
-
 logger = logging.getLogger(__name__)
 
 
@@ -49,6 +49,7 @@ app_state = {
     "load_status": {},
     "feature_names": None,
     "thresholds": None,
+    "explainers": {},
 }
 
 
@@ -147,6 +148,7 @@ async def lifespan(app: FastAPI):
 
     app_state["models"] = loaded_models
     app_state["load_status"] = load_status
+    app_state["explainers"] = {}
 
     try:
         app_state["feature_names"] = joblib.load(MODELS_DIR / "fraud_features_names.pkl")
@@ -157,10 +159,17 @@ async def lifespan(app: FastAPI):
 
     try:
         app_state["thresholds"] = joblib.load(MODELS_DIR / "model_thresholds.pkl")
-        print("thresholds loaded successfully")
+        logger.info("thresholds loaded successfully")
     except Exception as e:
         app_state["thresholds"] = None
-        print(f"Failed to load thresholds: {e}")
+        logger.error(f"Failed to load thresholds: {e}")
+
+    try:
+        if "catboost" in loaded_models:
+            app_state["explainers"]["catboost"] = shap.TreeExplainer(loaded_models["catboost"])
+            logger.info("CatBoost explainer loaded successfully")
+    except Exception as e:
+        logger.warning(f"Explainer load failed: {e}")
 
     yield
     app_state.clear()
@@ -240,42 +249,11 @@ async def debug_model_info():
     return info
 
 
-def get_shap_explanation(model, input_df, feature_names, top_k=3):
-    try:
-        if hasattr(model, "named_steps"):
-            final_model = list(model.named_steps.values())[-1]
-        else:
-            final_model = model
-
-        explainer = shap.TreeExplainer(final_model)
-        input_array = input_df.values
-        shap_values = explainer.shap_values(input_array)
-
-        if isinstance(shap_values, list):
-            shap_values = shap_values[1]
-
-        shap_values = shap_values[0]
-        top_idx = np.argsort(np.abs(shap_values))[-top_k:]
-
-        top_features = [
-            {
-                "feature": feature_names[i],
-                "impact": float(shap_values[i]),
-            }
-            for i in reversed(top_idx)
-        ]
-
-        return top_features
-
-    except Exception as e:
-        logger.warning(f"SHAP error: {e}")
-        return []
-
-
 @app.post("/predict/{model_choice}")
 def predict(model_choice: ModelChoice, data: FraudInput):
     start_time = time.time()
     model_key = model_choice.value
+
     logger.info(f"Incoming request for model: {model_key}")
     logger.info(f"Input data: {data.model_dump()}")
 
@@ -285,69 +263,51 @@ def predict(model_choice: ModelChoice, data: FraudInput):
         logger.warning(f"{model_key} not available. Falling back to CatBoost")
         model = app_state["models"].get("catboost")
         model_key = "catboost"
-    
-    feature_names = app_state["feature_names"]
 
+    feature_names = app_state["feature_names"]
     threshold = app_state["thresholds"].get(model_key, 0.5)
 
     input_df = build_model_features(data, feature_names)
 
     prediction = model.predict(input_df)[0]
     probability = model.predict_proba(input_df)[0][1]
+
     logger.info(f"Prediction: {prediction}, Probability: {probability}")
 
     top_reasons = []
 
-    try:
-        import shap
-
-        if model_key == "catboost":
-            explainer = shap.TreeExplainer(model)
-            shap_values = explainer.shap_values(input_df)
-
-            if isinstance(shap_values, list):
-                shap_values = shap_values[1]
-
-            shap_values = shap_values[0]
-
-            feature_impact = list(zip(feature_names, shap_values))
-            feature_impact.sort(key=lambda x: abs(x[1]), reverse=True)
-
-            top_reasons = [
-                {"feature": f, "impact": float(v)}
-                for f, v in feature_impact[:3]
-            ]
-        else:
-            raise Exception("Use fallback for non-catboost models")
-
-    except Exception as e:
-        print(f"SHAP skipped: {e}")
-
+    if probability > threshold:
         try:
-            baseline = input_df.copy()
-            impacts = []
+            if model_key == "catboost":
+                explainer = app_state.get("explainers", {}).get(model_key)
 
-            for col in feature_names:
-                temp = baseline.copy()
-                temp[col] = 0
-                new_prob = model.predict_proba(temp)[0][1]
-                impact = probability - new_prob
-                impacts.append((col, impact))
+                if explainer is None:
+                    explainer = shap.TreeExplainer(model)
+                    app_state["explainers"][model_key] = explainer
 
-            impacts.sort(key=lambda x: abs(x[1]), reverse=True)
+                shap_values = explainer.shap_values(input_df)
 
-            top_reasons = [
-                {"feature": f, "impact": float(v)}
-                for f, v in impacts[:3]
-            ]
+                if isinstance(shap_values, list):
+                    shap_values = shap_values[1]
 
-        except Exception as fallback_error:
-            logger.error(f"Fallback failed: {fallback_error}")
+                shap_values = shap_values[0]
+
+                feature_impact = list(zip(feature_names, shap_values))
+                feature_impact.sort(key=lambda x: abs(x[1]), reverse=True)
+
+                top_reasons = [
+                    {"feature": f, "impact": float(v)}
+                    for f, v in feature_impact[:3]
+                ]
+            else:
+                raise Exception("Use fallback for non-catboost models")
+
+        except Exception as e:
+            logger.warning(f"SHAP error: {e}")
             top_reasons = []
 
     decision = "FRAUD" if probability >= threshold else "SAFE"
-    end_time = time.time()
-    response_time = round(end_time - start_time, 4)
+    response_time = round(time.time() - start_time, 4)
 
     return {
         "model_used": model_key,

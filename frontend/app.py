@@ -8,7 +8,7 @@ import streamlit as st
 
 API_URL = os.getenv(
     "API_URL",
-    "https://fraud-api-gef5.onrender.com"
+    "https://fraud-api-gef5.onrender.com",
 )
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -55,7 +55,6 @@ with col2:
 
 st.info("Copy the transactions from CSV/JSON into a CSV file with the same format as the sample file.")
 
-
 st.sidebar.markdown("### API Status")
 
 try:
@@ -69,12 +68,10 @@ try:
 except requests.RequestException:
     st.sidebar.error("API Not Connected ❌")
 
-
 model_choice = st.sidebar.selectbox(
     "Select Model",
     ["catboost", "balanced_rf", "hybrid_catboost", "hybrid_lr"],
 )
-
 
 st.subheader("Enter Transaction Details")
 
@@ -89,14 +86,13 @@ with col1:
 with col2:
     transaction_type = st.selectbox(
         "Transaction Type",
-        ["CASH_IN", "CASH_OUT","TRANSFER", "PAYMENT", "DEBIT"],
+        ["CASH_IN", "CASH_OUT", "TRANSFER", "PAYMENT", "DEBIT"],
     )
     oldbalanceDest = st.number_input("Old Balance Destination", value=99999999.99)
     newbalanceDest = st.number_input("New Balance Destination", value=99999999.99)
 
 nameOrig = st.text_input("Sender ID", "C123456789")
 nameDest = st.text_input("Receiver ID", "M9876543210", max_chars=11)
-
 
 if st.button("🔍 Predict Fraud"):
     input_data = {
@@ -112,13 +108,14 @@ if st.button("🔍 Predict Fraud"):
     }
 
     try:
-        response = requests.post(
-            f"{API_URL}/predict/{model_choice}",
-            json=input_data,
-            timeout=20,
-        )
-        response.raise_for_status()
-        result = response.json()
+        with st.spinner("Analyzing transaction... Please wait ⏳"):
+            response = requests.post(
+                f"{API_URL}/predict/{model_choice}",
+                json=input_data,
+                timeout=15,
+            )
+            response.raise_for_status()
+            result = response.json()
 
         st.subheader("📊 Prediction Result")
 
@@ -142,7 +139,7 @@ if st.button("🔍 Predict Fraud"):
         if "top_reasons" in result and result["top_reasons"]:
             st.subheader("🧠 Top Fraud Reasons")
             for reason in result["top_reasons"]:
-                impact = reason['impact']
+                impact = reason["impact"]
                 symbol = "🔺" if impact > 0 else "🔻"
                 st.write(f"{symbol} {reason['feature']} → Impact: {impact:.4f}")
 
