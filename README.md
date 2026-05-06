@@ -156,3 +156,5 @@ This project demonstrates **end-to-end ML deployment**, including:
 * API development
 * Frontend integration
 * Real-time prediction
+
+##### ⚠️ Note: Initial request may take a few seconds due to model loading on free-tier hosting (Render).
