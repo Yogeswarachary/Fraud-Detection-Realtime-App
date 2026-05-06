@@ -6,7 +6,10 @@ import requests
 import streamlit as st
 
 
-API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
+API_URL = os.getenv(
+    "API_URL",
+    "https://fraud-api-gef5.onrender.com"
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
