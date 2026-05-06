@@ -125,7 +125,10 @@ if st.button("🔍 Predict Fraud"):
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            st.metric("Prediction", result["decision"])
+            if result["decision"] == "FRAUD":
+                st.error("⚠️ Fraud Detected")
+            else:
+                st.success("✅ Safe Transaction")
 
         with col2:
             fraud_risk_score = result.get("fraud_risk_score")
@@ -134,11 +137,14 @@ if st.button("🔍 Predict Fraud"):
 
         with col3:
             st.metric("Threshold Used", result["threshold_used"])
+            st.info(f"⏱ Response Time: {result.get('response_time', 'N/A')} sec")
 
         if "top_reasons" in result and result["top_reasons"]:
             st.subheader("🧠 Top Fraud Reasons")
             for reason in result["top_reasons"]:
-                st.write(f"🔹 {reason['feature']} → Impact: {reason['impact']:.4f}")
+                impact = reason['impact']
+                symbol = "🔺" if impact > 0 else "🔻"
+                st.write(f"{symbol} {reason['feature']} → Impact: {impact:.4f}")
 
         with st.expander("🔎 Full Response"):
             st.json(result)

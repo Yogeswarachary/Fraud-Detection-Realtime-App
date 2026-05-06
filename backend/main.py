@@ -14,8 +14,17 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, constr
+import time
 
 from custom_models import IsoForestClassifier
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+logger = logging.getLogger(__name__)
 
 
 # Register the custom model in __main__ so cloudpickle can unpickle it
@@ -119,32 +128,32 @@ def build_model_features(data: FraudInput, feature_names) -> pd.DataFrame:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"Current working directory: {Path.cwd()}")
-    print(f"Base directory: {BASE_DIR}")
+    logger.info(f"Current working directory: {Path.cwd()}")
+    logger.info(f"Base directory: {BASE_DIR}")
 
     loaded_models = {}
     load_status = {}
 
     for model_name, model_path in MODEL_FILES.items():
         try:
-            print(f"Loading {model_name} from {model_path}")
+            logger.info(f"Loading {model_name} from {model_path}")
             with open(model_path, "rb") as f:
                 loaded_models[model_name] = cloudpickle.load(f)
             load_status[model_name] = "loaded"
-            print(f"{model_name} loaded successfully")
+            logger.info(f"{model_name} loaded successfully")
         except Exception as e:
             load_status[model_name] = f"failed: {str(e)}"
-            print(f"Failed to load {model_name}: {e}")
+            logger.error(f"Failed to load {model_name}: {e}")
 
     app_state["models"] = loaded_models
     app_state["load_status"] = load_status
 
     try:
         app_state["feature_names"] = joblib.load(MODELS_DIR / "fraud_features_names.pkl")
-        print("feature_names loaded successfully")
+        logger.info("feature_names loaded successfully")
     except Exception as e:
         app_state["feature_names"] = None
-        print(f"Failed to load feature_names: {e}")
+        logger.error(f"Failed to load feature_names: {e}")
 
     try:
         app_state["thresholds"] = joblib.load(MODELS_DIR / "model_thresholds.pkl")
@@ -259,18 +268,24 @@ def get_shap_explanation(model, input_df, feature_names, top_k=3):
         return top_features
 
     except Exception as e:
-        print("SHAP error:", e)
+        logger.warning(f"SHAP error: {e}")
         return []
 
 
 @app.post("/predict/{model_choice}")
 def predict(model_choice: ModelChoice, data: FraudInput):
+    start_time = time.time()
     model_key = model_choice.value
+    logger.info(f"Incoming request for model: {model_key}")
+    logger.info(f"Input data: {data.model_dump()}")
 
-    if model_key not in app_state["models"]:
-        raise HTTPException(status_code=400, detail="Model not found")
+    model = app_state["models"].get(model_key)
 
-    model = app_state["models"][model_key]
+    if model is None:
+        logger.warning(f"{model_key} not available. Falling back to CatBoost")
+        model = app_state["models"].get("catboost")
+        model_key = "catboost"
+    
     feature_names = app_state["feature_names"]
 
     threshold = app_state["thresholds"].get(model_key, 0.5)
@@ -279,6 +294,7 @@ def predict(model_choice: ModelChoice, data: FraudInput):
 
     prediction = model.predict(input_df)[0]
     probability = model.predict_proba(input_df)[0][1]
+    logger.info(f"Prediction: {prediction}, Probability: {probability}")
 
     top_reasons = []
 
@@ -326,10 +342,12 @@ def predict(model_choice: ModelChoice, data: FraudInput):
             ]
 
         except Exception as fallback_error:
-            print(f"Fallback failed: {fallback_error}")
+            logger.error(f"Fallback failed: {fallback_error}")
             top_reasons = []
 
     decision = "FRAUD" if probability >= threshold else "SAFE"
+    end_time = time.time()
+    response_time = round(end_time - start_time, 4)
 
     return {
         "model_used": model_key,
@@ -339,4 +357,5 @@ def predict(model_choice: ModelChoice, data: FraudInput):
         "decision": decision,
         "threshold_used": threshold,
         "top_reasons": top_reasons,
+        "response_time": response_time,
     }
