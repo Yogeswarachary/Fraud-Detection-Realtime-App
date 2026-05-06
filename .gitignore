@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+
+# Environments
+fraud_env_312/
+env/
+venv/
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+
+# Logs
+*.log
+
+# dotenv
+.env
+
+# Models (optional for large repo)
+# backend/models/*.pkl
